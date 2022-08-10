@@ -48,14 +48,30 @@ public:
  paddle::platform::FastDivMod depth;
 
  explicit HOSTDEVICE FastDivModForPooling3D(const int channels,
-                                          const int output_width,
-                                          const int output_height,
-                                          const int output_depth) {
+                                            const int output_width,
+                                            const int output_height,
+                                            const int output_depth) {
    channel = paddle::platform::FastDivMod(channels);
    width = paddle::platform::FastDivMod(output_width);
    height = paddle::platform::FastDivMod(output_height);
    depth = paddle::platform::FastDivMod(output_depth);
  }
+};
+
+// SUB:DONE FastDivModForPooling3DStride
+struct FastDivModForPooling3DStride {
+ public:
+  paddle::platform::FastDivMod width;
+  paddle::platform::FastDivMod height;
+  paddle::platform::FastDivMod depth;
+
+  explicit HOSTDEVICE FastDivModForPooling3DStride(const int stride_width,
+                                                   const int stride_height,
+                                                   const int stride_depth) {
+    width = paddle::platform::FastDivMod(stride_width);
+    height = paddle::platform::FastDivMod(stride_height);
+    depth = paddle::platform::FastDivMod(stride_depth);                      
+  }
 };
 
 // SUB:REF:DONE FastDivModForPooling2DWithMoreStaff
@@ -1847,7 +1863,7 @@ template class Pool3dGradFunctor<phi::GPUContext,
                                  AvgPoolGrad<dtype::float16>,
                                  dtype::float16>;
 
-// SUB:REF:TODO maxpool2d前向kernel
+// SUB:REF:DOING maxpool2d前向kernel
 template <typename T1, typename T2>
 __global__ void KernelMaxPool2dWithIdx(const int nthreads,
                                        const T1* input_data,
@@ -1920,7 +1936,7 @@ __global__ void KernelMaxPool2dWithIdx(const int nthreads,
   }
 }
 
-// SUB:REF:TODO maxpool2d反向kernel
+// SUB:REF:DOING maxpool2d反向kernel
 template <typename T1, typename T2>
 __global__ void KernelMaxPool2DWithIdxGrad(const int nthreads,
                                            const T1* output_grad,
@@ -1967,7 +1983,8 @@ __global__ void KernelMaxPool2DWithIdxGrad(const int nthreads,
       pwend =
           min((w_offset + 1) * output_width / input_width + 1, output_width);
     } else {
-      // 这里是要算output的索引，所以要加padding
+      // 这里是要算output即grad_input的索引，所以要加padding
+      // 注意output_grad指的就是output的梯度
       phstart =
           (h_offset + padding_height < ksize_height)
               ? 0
@@ -1989,6 +2006,8 @@ __global__ void KernelMaxPool2DWithIdxGrad(const int nthreads,
           input_grad_data += output_grad[ph * output_width + pw];
       }
     }
+    // 根据input切的grid和block
+    // input的这个位置有没有梯度，其实也是取决于output上所有它可能作用到的位置是否是max，求和
     input_grad[index] = input_grad_data;
   }
 }
@@ -1998,7 +2017,7 @@ __global__ void KernelMaxPool2DWithIdxGrad(const int nthreads,
  * Ksize, strides, paddings are two elements. These two elements represent
  * height and width, respectively.
  */
- // SUB:REF:TODO maxpool2d起前向
+ // SUB:REF:DOING maxpool2d起前向
 template <typename T1, typename T2>
 class MaxPool2dWithIndexFunctor<phi::GPUContext, T1, T2> {
  public:
@@ -2069,7 +2088,7 @@ class MaxPool2dWithIndexFunctor<phi::GPUContext, T1, T2> {
  * Ksize, strides, paddings are two elements. These two elements represent
  * height and width, respectively.
  */
- // SUB:REF:TODO maxpool2d起反向
+ // SUB:REF:DOING maxpool2d起反向
 template <typename T1, typename T2>
 class MaxPool2dWithIndexGradFunctor<phi::GPUContext, T1, T2> {
  public:
@@ -2239,7 +2258,8 @@ __global__ void KernelMaxPool3DWithIdxGrad(const int nthreads,
                                            const int padding_width,
                                            bool adaptive,
                                            T1* input_grad,
-                                           FastDivModForPooling3D divmods) {
+                                           FastDivModForPooling3D divmods,
+                                           FastDivModForPooling3DStride divmods_stride) {
   // 注意这个是反向，maxpooling的反向是，如果input正好等于output的值，在这个input位置上的梯度就是保持不变，其他的都是0
   for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < nthreads;
        index += blockDim.x * gridDim.x) {
@@ -2266,6 +2286,10 @@ __global__ void KernelMaxPool3DWithIdxGrad(const int nthreads,
     mask += output_offset;
     output_grad += output_offset;
 
+    // SUB:DOING 注意思考这里的索引计算方式，它的offset和p实际上针对的是grad_input即output来算的
+    // 首先这里的grid和block是按照input来切分的，output的多个位置都可能对应到input的某个位置，所以就是循环这些位置，求和来对应到那个input位置的值
+    // offset其实也是input的offset
+
     // 调用的时候是关掉adapative的，但adaptive是什么？意思就是不需要根据padding，stride，直接就根据input和output算出来kernel的作用范围
     // 这里不知道为什么没有像其他kernel一样直接用封装好的adaptive_index计算接口，不过这个应该也没什么好优化的
     if (adaptive) {
@@ -2280,22 +2304,25 @@ __global__ void KernelMaxPool3DWithIdxGrad(const int nthreads,
           min((w_offset + 1) * output_width / input_width + 1, output_width);
     } else {
       // 计算offset的时候，其实锚定原始的input网格，现在是根据对input的padding和kernel_size和stride，重新锚定到output的网格，从移动的视角
-      pdstart =
-          (d_offset + padding_depth < ksize_depth)
-              ? 0
-              : (d_offset + padding_depth - ksize_depth) / stride_depth + 1;
-      phstart =
-          (h_offset + padding_height < ksize_height)
-              ? 0
-              : (h_offset + padding_height - ksize_height) / stride_height + 1;
-      pwstart =
-          (w_offset + padding_width < ksize_width)
-              ? 0
-              : (w_offset + padding_width - ksize_width) / stride_width + 1;
-      pdend = min((d_offset + padding_depth) / stride_depth + 1, output_depth);
-      phend =
-          min((h_offset + padding_height) / stride_height + 1, output_height);
-      pwend = min((w_offset + padding_width) / stride_width + 1, output_width);
+      // SUB:DONE 用fastdivmod优化这一部分除法，三目运算符就是语法糖，并不是说有更好的性能，可以放心优化
+      if (d_offset + padding_depth < ksize_depth) 
+        pdstart = 0;
+      else 
+        pdstart = divmods_stride.depth.Div(d_offset + padding_depth - ksize_depth) + 1;
+      
+      if (h_offset + padding_height < ksize_height) 
+        phstart = 0;
+      else
+        phstart = divmods_stride.height.Div(h_offset + padding_height - ksize_height) + 1;
+  
+      if (w_offset + padding_width < ksize_width)
+        pwstart = 0;
+      else
+        pwstart = divmods_stride.width.Div(w_offset + padding_width - ksize_width) + 1;
+      
+      pdend = min(divmods_stride.depth.Div(d_offset + padding_depth) + 1, output_depth);
+      phend = min(divmods_stride.height.Div(h_offset + padding_height) + 1, output_height);
+      pwend = min(divmods_stride.width.Div(w_offset + padding_width) + 1, output_width);
     }
 
     T1 input_grad_data = 0;
@@ -2366,6 +2393,7 @@ class MaxPool3dWithIndexFunctor<phi::GPUContext, T1, T2> {
 #endif
 
     // SUB:TODO 一维的block起法，可优化，需要先思考
+    // 理论上需要更通用的计算方式，但考虑到测例不多，而且每个block尽可能多线程可以减少切换开销，所以这里的优化空间可能并不大
     int blocks = (nthreads + thread_num - 1) / thread_num;
     dim3 threads(thread_num, 1);
     dim3 grid(blocks, 1);
@@ -2449,6 +2477,9 @@ class MaxPool3dWithIndexGradFunctor<phi::GPUContext, T1, T2> {
     // SUB:DONE pool_divmods传到反向kernel
     auto pool_divmods = FastDivModForPooling3D(input_channels, input_width, input_height, input_depth);
 
+    // SUB:DONE pool_stride_divmods传到反向kernel
+    auto pool_stride_divmods = FastDivModForPooling3DStride(stride_width, stride_height, stride_depth);
+
     KernelMaxPool3DWithIdxGrad<T1, T2>
         <<<grid, threads, 0, context.stream()>>>(nthreads,
                                                  output_grad_data,
@@ -2471,7 +2502,8 @@ class MaxPool3dWithIndexGradFunctor<phi::GPUContext, T1, T2> {
                                                  padding_width,
                                                  adaptive,
                                                  input_grad_data,
-                                                 pool_divmods);
+                                                 pool_divmods,
+                                                 pool_stride_divmods);
   }
 };
 
