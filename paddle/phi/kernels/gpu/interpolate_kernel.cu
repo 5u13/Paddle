@@ -102,6 +102,7 @@ __global__ void KeLinearInterpFw(const T* in,
   }
 }
 
+// SUB:REF:DOING KeNearestNeighborInterpNCHWFw
 template <typename T>
 __global__ void KeNearestNeighborInterpNCHWFw(const T* in,
                                               const size_t in_img_h,
@@ -116,6 +117,7 @@ __global__ void KeNearestNeighborInterpNCHWFw(const T* in,
   int out_img_idx = threadIdx.x + blockIdx.x * blockDim.x;
   int out_img_idy = threadIdx.y + blockIdx.y * blockDim.y;
   int nc_id = threadIdx.z + blockIdx.z * blockDim.z;
+  // 对于z维度的处理逻辑，还是按照grid-stride loop的方式，来适配任意数量的nc，但h和w默认还是一定能处理完
   int nc_stride = blockDim.z * gridDim.z;
 
   // nearest_sampling by multiple read in_addr and write to out_addr
@@ -882,6 +884,7 @@ static void Interpolate2DCUDAFwd(
     if (data_layout == DataLayout::kNCHW) {
       // get launch 3D config
       int nc = n * c;
+      // SUB:REF:DOING 调用GetGpuLaunchConfig3D
       backends::gpu::GpuLaunchConfig config_3d =
           backends::gpu::GetGpuLaunchConfig3D(dev_ctx, nc, out_h, out_w);
       KeNearestNeighborInterpNCHWFw<T><<<config_3d.block_per_grid,

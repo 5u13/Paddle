@@ -31,7 +31,7 @@ namespace {
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 }  // namespace
 
-// SUB:REF:TODO 参考它是怎么二维起kernel的
+// SUB:REF:DONE 参考它是怎么二维起kernel的
 template <typename T, typename IndexT = int>
 __global__ void IndexSampleForward(const IndexT* index,
                                    const T* in_data,
@@ -52,7 +52,7 @@ __global__ void IndexSampleForward(const IndexT* index,
   }
 }
 
-// SUB:REF:TODO 参考它是怎么二维起kernel的
+// SUB:REF:DONE 参考它是怎么二维起kernel的
 template <typename T, typename Context>
 void IndexSampleKernel(const Context& ctx,
                        const DenseTensor& x,

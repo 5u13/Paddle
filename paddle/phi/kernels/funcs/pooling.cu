@@ -23,7 +23,6 @@ limitations under the License. */
 namespace phi {
 namespace funcs {
 
-// SUB:REF:DONE FastDivModForPooling2D
 struct FastDivModForPooling {
  public:
   paddle::platform::FastDivMod channel;
@@ -39,7 +38,6 @@ struct FastDivModForPooling {
   }
 };
 
-// SUB:DONE FastDivModForPooling3D
 struct FastDivModForPooling3D {
 public:
  paddle::platform::FastDivMod channel;
@@ -58,7 +56,6 @@ public:
  }
 };
 
-// SUB:DONE FastDivModForPooling3DStride
 struct FastDivModForPooling3DStride {
  public:
   paddle::platform::FastDivMod width;
@@ -74,7 +71,6 @@ struct FastDivModForPooling3DStride {
   }
 };
 
-// SUB:REF:DONE FastDivModForPooling2DWithMoreStaff
 struct FastDivModForPoolingWithMoreStaff {
  public:
   paddle::platform::FastDivMod channel;
@@ -103,7 +99,6 @@ struct FastDivModForPoolingWithMoreStaff {
   }
 };
 
-// SUB:DONE FastDivModForPooling3DWithMoreStaff
 struct FastDivModForPooling3DWithMoreStaff {
 public:
  paddle::platform::FastDivMod channel;
@@ -142,7 +137,6 @@ public:
  }
 };
 
-// SUB:REF:DONE OffsetPreparationFor4Dimension
 // 不过如果只优化我锚定的with_index kernel，就不需要写channel_last格式的索引，但KernelPool3D&KernelPool3DGrad&KernelMaxPool3DGrad是需要的，withindex的不管是2d还是3d其实都只支持一种格式
 // 不过按照2d的标准是所有的kernel都有改写的，所以还是应该写一个通用的，写优化index的kernel，没问题以后再实现到所有3d kernel
 template <typename FastDivModForPooling>
@@ -167,7 +161,6 @@ __device__ void OffsetPreparationFor4Dimension(int index,
     *stride = (channel_divmod.val[0] * divmods.channel.divisor + *c_offset) *
               aux_height * aux_width;
   } else { /* NHWC */
-    // SUB:FIXME 这个感觉改成channel_divmod更合适
     auto c_divmod = divmods.channel.Divmod(index);
     auto input_width_divmod = divmods.width.Divmod(c_divmod.val[0]);
     auto input_height_divmod = divmods.height.Divmod(input_width_divmod.val[0]);
@@ -179,7 +172,6 @@ __device__ void OffsetPreparationFor4Dimension(int index,
   }
 }
 
-// SUB:DONE OffsetPreparationFor5Dimension
 template <typename FastDivModForPooling3D>
 __device__ void OffsetPreparationFor5Dimension(int index,
                                                bool channel_last,
@@ -727,7 +719,7 @@ class Pool2dGradFunctor<phi::GPUContext, PoolProcess, T> {
                                                           stride_width,
                                                           stride_height);
     
-    // SUB:REF:TODO 一维grid和block的起法，只在2d的特定2个kernel使用，可以考虑用到各个kernel
+    // SUB:REF:DOING 一维grid和block的起法，只在2d的特定2个kernel使用，可以考虑用到各个kernel
     auto config = phi::backends::gpu::GetGpuLaunchConfig1D(context, nthreads);
     KernelPool2DGrad<T, PoolProcess><<<config.block_per_grid,
                                        config.thread_per_block,
@@ -1286,6 +1278,8 @@ __global__ void KernelMaxPool3DGrad(const int nthreads,
     }
     input_data += input_stride;
     input_grad += input_stride;
+    // SUB:REF:DOING 检查output对应的input数据，如果正好等于当前output数据，说明这个是input的maxindex
+    // 为什么不跟pytorch一样直接取mask
     for (int d = dstart; d < dend && !stop; ++d) {
       for (int h = hstart; h < hend && !stop; ++h) {
         for (int w = wstart; w < wend && !stop; ++w) {
@@ -1424,8 +1418,6 @@ class Pool3dFunctor<phi::GPUContext, PoolProcess, T> {
     int blocks = (nthreads + thread_num - 1) / thread_num;
     dim3 threads(thread_num, 1);
     dim3 grid(blocks, 1);
-
-    // SUB:TODO 其实这里按2d的写法是要用config的
 
     KernelPool3D<PoolProcess, T>
         <<<grid, threads, 0, context.stream()>>>(nthreads,
@@ -1575,8 +1567,6 @@ class Pool3dGradFunctor<phi::GPUContext, PoolProcess, T> {
     const T* output_data = output.data<T>();
     const T* output_grad_data = output_grad.data<T>();
     T* input_grad_data = context.template Alloc<T>(input_grad);
-
-    // SUB:TODO 其实这里按2d的写法是要用config的
 
     int nthreads =
         batch_size * input_channels * input_depth * input_height * input_width;
@@ -1900,6 +1890,8 @@ __global__ void KernelMaxPool2dWithIdx(const int nthreads,
                                                          &h_offset,
                                                          &c_offset,
                                                          &input_offset);
+    // SUB:FIXME 这么写不对吧，如果多次循环的话，index每次更新以后算出来的并不是stride，而是相对传参进来的位置的offset
+    // 原本写的kernel的一维线程配置刚好也是计算好只循环1次的
     input_data += input_offset;
 
     // 这里前向是用了adaptive的分装好的index计算接口
@@ -1971,6 +1963,7 @@ __global__ void KernelMaxPool2DWithIdxGrad(const int nthreads,
                                                          &h_offset,
                                                          &c_offset,
                                                          &output_offset);
+    // SUB:FIXME 这么写不对吧，如果多次循环的话，index每次更新以后算出来的并不是stride，而是相对传参进来的位置的offset
     mask_data += output_offset;
     output_grad += output_offset;
 
@@ -2177,7 +2170,7 @@ __global__ void KernelMaxPool3DWithIdx(const int nthreads,
                                        FastDivModForPooling3D divmods) {
   for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < nthreads;
        index += blockDim.x * gridDim.x) {
-    // SUB:DONE 优化索引计算中的除法和求模，通过fastdivmod计算（前面的函数参数和后面的变量名也需要修改）
+    // 优化索引计算中的除法和求模，通过fastdivmod计算（前面的函数参数和后面的变量名也需要修改）
     int dstart, dend, hstart, hend, wstart, wend;
     int w_offset, h_offset, d_offset, c_offset, input_offset;
     OffsetPreparationFor5Dimension<FastDivModForPooling3D>(index, 
@@ -2235,7 +2228,8 @@ __global__ void KernelMaxPool3DWithIdx(const int nthreads,
   }
 }
 
-// SUB:TODO maxpool3d反向kernel
+// SUB:DONE maxpool3d反向kernel
+/*
 template <typename T1, typename T2>
 __global__ void KernelMaxPool3DWithIdxGrad(const int nthreads,
                                            const T1* output_grad,
@@ -2260,15 +2254,22 @@ __global__ void KernelMaxPool3DWithIdxGrad(const int nthreads,
                                            T1* input_grad,
                                            FastDivModForPooling3D divmods,
                                            FastDivModForPooling3DStride divmods_stride) {
+  // input参数和stride参数其实不传都可以，因为通过divmods已经传进来了
   // 注意这个是反向，maxpooling的反向是，如果input正好等于output的值，在这个input位置上的梯度就是保持不变，其他的都是0
   for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < nthreads;
        index += blockDim.x * gridDim.x) {
     // ncdhw
     // 对于反向而言，input是output，output是input
     // 不知道为啥没有跟其他接口一样考虑ndhwc格式的索引计算？with_index的都没考虑
-    // SUB:DONE 优化索引计算中的除法和求模，通过fastdivmod计算（前面的函数参数和后面的变量名也需要修改）
+    // 优化索引计算中的除法和求模，通过fastdivmod计算（前面的函数参数和后面的变量名也需要修改）
+
+    // 注意思考这里的索引计算方式，它的offset和p实际上针对的是grad_input即output来算的
+    // 首先这里的grid和block是按照input来切分的，output的多个位置都可能对应到input的某个位置，所以就是循环这些位置，求和来对应到那个input位置的值
+    // offset其实也是input的offset
+
     int pdstart, pdend, phstart, phend, pwstart, pwend;
     int w_offset, h_offset, d_offset, c_offset, output_offset;
+    // 注意这里传到output索引并不是说求模的是output哦，实际上求模的是创建divmods是的input索引，output索引是用于计算output_offset
     OffsetPreparationFor5Dimension<FastDivModForPooling3D>(index, 
                                                            false, 
                                                            divmods, 
@@ -2283,15 +2284,13 @@ __global__ void KernelMaxPool3DWithIdxGrad(const int nthreads,
                                                            &d_offset, 
                                                            &c_offset, 
                                                            &output_offset);
+    // 后面是索引dhw，所以先把nc给偏移出去
     mask += output_offset;
     output_grad += output_offset;
 
-    // SUB:DOING 注意思考这里的索引计算方式，它的offset和p实际上针对的是grad_input即output来算的
-    // 首先这里的grid和block是按照input来切分的，output的多个位置都可能对应到input的某个位置，所以就是循环这些位置，求和来对应到那个input位置的值
-    // offset其实也是input的offset
-
     // 调用的时候是关掉adapative的，但adaptive是什么？意思就是不需要根据padding，stride，直接就根据input和output算出来kernel的作用范围
     // 这里不知道为什么没有像其他kernel一样直接用封装好的adaptive_index计算接口，不过这个应该也没什么好优化的
+    // SUB:TODO adaptive部分也可以用fastdivmod优化下
     if (adaptive) {
       pdstart = d_offset * output_depth / input_depth;
       pdend =
@@ -2304,7 +2303,7 @@ __global__ void KernelMaxPool3DWithIdxGrad(const int nthreads,
           min((w_offset + 1) * output_width / input_width + 1, output_width);
     } else {
       // 计算offset的时候，其实锚定原始的input网格，现在是根据对input的padding和kernel_size和stride，重新锚定到output的网格，从移动的视角
-      // SUB:DONE 用fastdivmod优化这一部分除法，三目运算符就是语法糖，并不是说有更好的性能，可以放心优化
+      // 用fastdivmod优化这一部分除法，三目运算符就是语法糖，并不是说有更好的性能，可以放心优化
       if (d_offset + padding_depth < ksize_depth) 
         pdstart = 0;
       else 
@@ -2340,6 +2339,140 @@ __global__ void KernelMaxPool3DWithIdxGrad(const int nthreads,
       }
     }
     input_grad[index] = input_grad_data;
+  }
+}
+*/
+
+// SUB:DONE 三维线程配置版的maxpool3d反向kernel
+/*
+template <typename T1, typename T2>
+__global__ void KernelMaxPool3DWithIdxGrad(const int ncd,
+                                           const T1* output_grad,
+                                           const T2* mask,
+                                           const int channels,
+                                           const int input_depth,
+                                           const int input_height,
+                                           const int input_width,
+                                           const int output_depth,
+                                           const int output_height,
+                                           const int output_width,
+                                           const int ksize_depth,
+                                           const int ksize_height,
+                                           const int ksize_width,
+                                           const int stride_depth,
+                                           const int stride_height,
+                                           const int stride_width,
+                                           const int padding_depth,
+                                           const int padding_height,
+                                           const int padding_width,
+                                           bool adaptive,
+                                           T1* input_grad,
+                                           FastDivModForPooling3D divmods_input,
+                                           FastDivModForPooling3DStride divmods_stride) {
+  // input参数和stride参数其实不传都可以，因为通过divmods已经传进来了
+  // 注意这个是反向，maxpooling的反向是，如果input正好等于output的值，在这个input位置上的梯度就是保持不变，其他的都是0
+
+  // 注意思考这里的索引计算方式，它的offset和p实际上针对的是grad_input即output来算的
+  // 首先这里的grid和block是按照input来切分的，output的多个位置都可能对应到input的某个位置，所以就是循环这些位置，求和来对应到那个input位置的值
+  // offset其实也是input的offset
+
+  int w_offset, h_offset, d_offset, c_offset, output_offset; 
+  int pdstart, pdend, phstart, phend, pwstart, pwend;
+
+  w_offset = blockIdx.x * blockDim.x + threadIdx.x;
+  h_offset = blockIdx.y * blockDim.y + threadIdx.y;
+
+  // 一直没有注意到这一点，这里要注意线程配置的时候会向2次幂取整，但实际index的时候不能越界
+  if (w_offset < input_width && h_offset < input_height) {
+    // SUB:TODO 这里还可以减少除法和求模次数
+    // 这样多次循环会不会造成除法次数太多呢？我可以再抽出一个stride计算，每次offset+stride就好，但只循环一次的情况反而更慢
+    for (int index_z = blockIdx.z * blockDim.z + threadIdx.z; index_z < ncd; index_z += gridDim.z * blockDim.z) {
+        auto input_depth_divmod = divmods_input.depth.Divmod(index_z);
+        auto channel_divmod = divmods_input.channel.Divmod(input_depth_divmod.val[0]);
+        // SUB:TODO 这里其实不需要计算c_offset，直接nc_offset就好
+        d_offset = input_depth_divmod.val[1];
+        c_offset = channel_divmod.val[1];
+        output_offset = (channel_divmod.val[0] * divmods_input.channel.divisor + c_offset) * output_depth * output_height * output_width;
+
+        if (adaptive) {
+          pdstart = divmods_input.depth.Div(d_offset * output_depth);
+          pdend = min(divmods_input.depth.Div((d_offset + 1) * output_depth) + 1, output_depth);
+          phstart = divmods_input.height.Div(h_offset * output_height);
+          phend = min(divmods_input.height.Div((h_offset + 1) * output_height) + 1, output_height);
+          pwstart = divmods_input.width.Div(w_offset * output_width);
+          pwend = min(divmods_input.width.Div((w_offset + 1) * output_width) + 1, output_width);
+        } else {
+          // 计算offset的时候，其实锚定原始的input网格，现在是根据对input的padding和kernel_size和stride，重新锚定到output的网格，从移动的视角
+          pdstart = (d_offset + padding_depth < ksize_depth) ? 0 : divmods_stride.depth.Div(d_offset + padding_depth - ksize_depth) + 1;
+          phstart = (h_offset + padding_height < ksize_height) ? 0 : divmods_stride.height.Div(h_offset + padding_height - ksize_height) + 1;
+          pwstart = (w_offset + padding_width < ksize_width) ? 0 : divmods_stride.width.Div(w_offset + padding_width - ksize_width) + 1;
+          pdend = min(divmods_stride.depth.Div(d_offset + padding_depth) + 1, output_depth);
+          phend = min(divmods_stride.height.Div(h_offset + padding_height) + 1, output_height);
+          pwend = min(divmods_stride.width.Div(w_offset + padding_width) + 1, output_width);
+        }
+
+        T1 input_grad_data = 0;
+        int input_current_feature_map_idx =
+            (d_offset * input_height + h_offset) * input_width + w_offset;
+        for (int pd = pdstart; pd < pdend; ++pd) {
+          for (int ph = phstart; ph < phend; ++ph) {
+            for (int pw = pwstart; pw < pwend; ++pw) {
+              // mask存的是跟output大小一样的，对应到input的最大索引
+              // 这里对output_offset的处理也是，实际上是相对最开始位置的offset，而不是每次循环的stride，所以不能用+=
+              if (mask[output_offset + (pd * output_height + ph) * output_width + pw] ==
+                  input_current_feature_map_idx)
+                input_grad_data +=
+                    output_grad[output_offset + (pd * output_height + ph) * output_width + pw];
+            }
+          }
+        }
+        input_grad[(index_z * input_height + h_offset) * input_width + w_offset] = input_grad_data;
+    }
+  }
+}
+*/
+
+// SUB:DONE pytorch版的maxpool3d反向kernel
+template <typename T1, typename T2>
+__global__ void KernelMaxPool3DWithIdxGrad(const int ncd,
+                                           const T1* output_grad,
+                                           const T2* mask,
+                                           const int channels,
+                                           const int input_depth,
+                                           const int input_height,
+                                           const int input_width,
+                                           const int output_depth,
+                                           const int output_height,
+                                           const int output_width,
+                                           const int ksize_depth,
+                                           const int ksize_height,
+                                           const int ksize_width,
+                                           const int stride_depth,
+                                           const int stride_height,
+                                           const int stride_width,
+                                           const int padding_depth,
+                                           const int padding_height,
+                                           const int padding_width,
+                                           bool adaptive,
+                                           T1* input_grad,
+                                           FastDivModForPooling3D divmods_output) {
+  int w_offset, h_offset, d_offset, nc_offset; 
+
+  w_offset = blockIdx.x * blockDim.x + threadIdx.x;
+  h_offset = blockIdx.y * blockDim.y + threadIdx.y;
+
+  // 一直没有注意到这一点，这里要注意线程配置的时候会向2次幂取整，但实际index的时候不能越界
+  if (w_offset < output_width && h_offset < output_height) {
+    for (int index_z = blockIdx.z * blockDim.z + threadIdx.z; index_z < ncd; index_z += gridDim.z * blockDim.z) {
+        auto output_depth_divmod = divmods_output.depth.Divmod(index_z);
+        d_offset = output_depth_divmod.val[1];
+        nc_offset = output_depth_divmod.val[0];
+        int output_index = nc_offset * output_depth * output_height * output_width + d_offset * output_height * output_width + h_offset * output_width + w_offset;
+        int max_index = mask[output_index];
+        if (max_index != -1) {
+          paddle::platform::CudaAtomicAdd(&input_grad[nc_offset * input_depth * input_height * input_width + max_index], output_grad[output_index]);
+        }
+    }
   }
 }
 
@@ -2392,13 +2525,12 @@ class MaxPool3dWithIndexFunctor<phi::GPUContext, T1, T2> {
     backends::gpu::ChangeThreadNum(context, &thread_num);
 #endif
 
-    // SUB:TODO 一维的block起法，可优化，需要先思考
     // 理论上需要更通用的计算方式，但考虑到测例不多，而且每个block尽可能多线程可以减少切换开销，所以这里的优化空间可能并不大
     int blocks = (nthreads + thread_num - 1) / thread_num;
     dim3 threads(thread_num, 1);
     dim3 grid(blocks, 1);
 
-    // SUB:DONE pool_divmods传到前向kernel
+    // pool_divmods传到前向kernel
     auto pool_divmods = FastDivModForPooling3D(input_channels, output_width, output_height, output_depth);
 
     KernelMaxPool3DWithIdx<T1, T2>
@@ -2432,7 +2564,89 @@ class MaxPool3dWithIndexFunctor<phi::GPUContext, T1, T2> {
  * Ksize, strides, paddings are three elements. These three elements represent
  * depth, height and width, respectively.
  */
- // SUB:TODO maxpool3d起反向
+ // SUB:DONE maxpool3d起反向
+ /*
+ template <typename T1, typename T2>
+ class MaxPool3dWithIndexGradFunctor<phi::GPUContext, T1, T2> {
+  public:
+   void operator()(const phi::GPUContext& context,
+                   const DenseTensor& output_grad,
+                   const DenseTensor& mask,
+                   const std::vector<int>& ksize,
+                   const std::vector<int>& strides,
+                   const std::vector<int>& paddings,
+                   bool adaptive,
+                   DenseTensor* input_grad) {
+     const int batch_size = input_grad->dims()[0];
+     const int input_channels = input_grad->dims()[1];
+     const int input_depth = input_grad->dims()[2];
+     const int input_height = input_grad->dims()[3];
+     const int input_width = input_grad->dims()[4];
+     const int output_depth = output_grad.dims()[2];
+     const int output_height = output_grad.dims()[3];
+     const int output_width = output_grad.dims()[4];
+     const int ksize_depth = ksize[0];
+     const int ksize_height = ksize[1];
+     const int ksize_width = ksize[2];
+     const int stride_depth = strides[0];
+     const int stride_height = strides[1];
+     const int stride_width = strides[2];
+     const int padding_depth = paddings[0];
+     const int padding_height = paddings[1];
+     const int padding_width = paddings[2];
+ 
+     const T1* output_grad_data = output_grad.data<T1>();
+     const T2* mask_data = mask.data<T2>();
+     // 怪怪的，看起来是alloc，但不是应该copy吗
+     T1* input_grad_data = context.template Alloc<T1>(input_grad);
+
+     int nthreads =
+         batch_size * input_channels * input_depth * input_height * input_width;
+     int blocks = (nthreads + 1024 - 1) / 1024;
+     dim3 threads(1024, 1);
+     dim3 grid(blocks, 1);
+
+     // pool_divmods传到反向kernel
+     auto pool_divmods = FastDivModForPooling3D(input_channels, input_width, input_height, input_depth);
+
+     // pool_stride_divmods传到反向kernel
+     auto pool_stride_divmods = FastDivModForPooling3DStride(stride_width, stride_height, stride_depth);
+ 
+     KernelMaxPool3DWithIdxGrad<T1, T2>
+         <<<grid, threads, 0, context.stream()>>>(nthreads,
+                                                  output_grad_data,
+                                                  mask_data,
+                                                  input_channels,
+                                                  input_depth,
+                                                  input_height,
+                                                  input_width,
+                                                  output_depth,
+                                                  output_height,
+                                                  output_width,
+                                                  ksize_depth,
+                                                  ksize_height,
+                                                  ksize_width,
+                                                  stride_depth,
+                                                  stride_height,
+                                                  stride_width,
+                                                  padding_depth,
+                                                  padding_height,
+                                                  padding_width,
+                                                  adaptive,
+                                                  input_grad_data,
+                                                  pool_divmods,
+                                                  pool_stride_divmods);
+   }
+ };
+ */
+
+ /*
+ * All tensors are in NCDHW format.
+ * Ksize, strides, paddings are three elements. These three elements represent
+ * depth, height and width, respectively.
+ */
+ // SUB:DONE 三维线程配置版的maxpool3d起反向
+ /*
 template <typename T1, typename T2>
 class MaxPool3dWithIndexGradFunctor<phi::GPUContext, T1, T2> {
  public:
@@ -2464,24 +2678,29 @@ class MaxPool3dWithIndexGradFunctor<phi::GPUContext, T1, T2> {
 
     const T1* output_grad_data = output_grad.data<T1>();
     const T2* mask_data = mask.data<T2>();
-    // 怪怪的，看起来是alloc，但不是应该copy吗
     T1* input_grad_data = context.template Alloc<T1>(input_grad);
 
-    // SUB:TODO 一维的block起法，可优化，需要先思考
-    int nthreads =
-        batch_size * input_channels * input_depth * input_height * input_width;
-    int blocks = (nthreads + 1024 - 1) / 1024;
-    dim3 threads(1024, 1);
-    dim3 grid(blocks, 1);
+    int ncd = batch_size * input_channels * input_depth;
 
-    // SUB:DONE pool_divmods传到反向kernel
-    auto pool_divmods = FastDivModForPooling3D(input_channels, input_width, input_height, input_depth);
+    backends::gpu::GpuLaunchConfig config = backends::gpu::GetGpuLaunchConfig3D(context, ncd, input_height, input_width);
+    dim3 threads = config.thread_per_block;
+    dim3 grid = config.block_per_grid;
 
-    // SUB:DONE pool_stride_divmods传到反向kernel
-    auto pool_stride_divmods = FastDivModForPooling3DStride(stride_width, stride_height, stride_depth);
+    // int thread_x = 32;
+    // int thread_y = 8;
+    // int thread_z = 1;
+    // dim3 threads(thread_x, thread_y, thread_z);
+    // std::array<int, 3> max_grid_dim = context.GetCUDAMaxGridDimSize();
+    // int block_x = (input_width + threads.x - 1) / threads.x;
+    // int block_y = (input_height + threads.y - 1) / threads.y;
+    // int block_z = (ncd > max_grid_dim[2] * threads.z) ? max_grid_dim[2] : (ncd + threads.z - 1) / threads.z;
+    // dim3 grid(block_x, block_y, block_z);
+      
+    auto pool_divmods_input = FastDivModForPooling3D(input_channels, input_width, input_height, input_depth);
+    auto pool_divmods_stride = FastDivModForPooling3DStride(stride_width, stride_height, stride_depth);
 
     KernelMaxPool3DWithIdxGrad<T1, T2>
-        <<<grid, threads, 0, context.stream()>>>(nthreads,
+        <<<grid, threads, 0, context.stream()>>>(ncd,
                                                  output_grad_data,
                                                  mask_data,
                                                  input_channels,
@@ -2502,10 +2721,94 @@ class MaxPool3dWithIndexGradFunctor<phi::GPUContext, T1, T2> {
                                                  padding_width,
                                                  adaptive,
                                                  input_grad_data,
-                                                 pool_divmods,
-                                                 pool_stride_divmods);
+                                                 pool_divmods_input,
+                                                 pool_divmods_stride);
   }
 };
+*/
+
+ /*
+ * All tensors are in NCDHW format.
+ * Ksize, strides, paddings are three elements. These three elements represent
+ * depth, height and width, respectively.
+ */
+ // SUB:DONE pytorch版的maxpool3d起反向
+ template <typename T1, typename T2>
+ class MaxPool3dWithIndexGradFunctor<phi::GPUContext, T1, T2> {
+  public:
+   void operator()(const phi::GPUContext& context,
+                   const DenseTensor& output_grad,
+                   const DenseTensor& mask,
+                   const std::vector<int>& ksize,
+                   const std::vector<int>& strides,
+                   const std::vector<int>& paddings,
+                   bool adaptive,
+                   DenseTensor* input_grad) {
+     const int batch_size = input_grad->dims()[0];
+     const int input_channels = input_grad->dims()[1];
+     const int input_depth = input_grad->dims()[2];
+     const int input_height = input_grad->dims()[3];
+     const int input_width = input_grad->dims()[4];
+     const int output_depth = output_grad.dims()[2];
+     const int output_height = output_grad.dims()[3];
+     const int output_width = output_grad.dims()[4];
+     const int ksize_depth = ksize[0];
+     const int ksize_height = ksize[1];
+     const int ksize_width = ksize[2];
+     const int stride_depth = strides[0];
+     const int stride_height = strides[1];
+     const int stride_width = strides[2];
+     const int padding_depth = paddings[0];
+     const int padding_height = paddings[1];
+     const int padding_width = paddings[2];
+ 
+     const T1* output_grad_data = output_grad.data<T1>();
+     const T2* mask_data = mask.data<T2>();
+     T1* input_grad_data = context.template Alloc<T1>(input_grad);
+ 
+     int ncd = batch_size * input_channels * output_depth;
+ 
+    //  backends::gpu::GpuLaunchConfig config = backends::gpu::GetGpuLaunchConfig3D(context, ncd, output_height, output_width);
+    //  dim3 threads = config.thread_per_block;
+    //  dim3 grid = config.block_per_grid;
+ 
+     int thread_x = 32;
+     int thread_y = 8;
+     int thread_z = 1;
+     dim3 threads(thread_x, thread_y, thread_z);
+     std::array<int, 3> max_grid_dim = context.GetCUDAMaxGridDimSize();
+     int block_x = (output_width + threads.x - 1) / threads.x;
+     int block_y = (output_height + threads.y - 1) / threads.y;
+     int block_z = (ncd > max_grid_dim[2] * threads.z) ? max_grid_dim[2] : (ncd + threads.z - 1) / threads.z;
+     dim3 grid(block_x, block_y, block_z);
+       
+     auto pool_divmods_output = FastDivModForPooling3D(input_channels, output_width, output_height, output_depth);
+ 
+     KernelMaxPool3DWithIdxGrad<T1, T2>
+         <<<grid, threads, 0, context.stream()>>>(ncd,
+                                                  output_grad_data,
+                                                  mask_data,
+                                                  input_channels,
+                                                  input_depth,
+                                                  input_height,
+                                                  input_width,
+                                                  output_depth,
+                                                  output_height,
+                                                  output_width,
+                                                  ksize_depth,
+                                                  ksize_height,
+                                                  ksize_width,
+                                                  stride_depth,
+                                                  stride_height,
+                                                  stride_width,
+                                                  padding_depth,
+                                                  padding_height,
+                                                  padding_width,
+                                                  adaptive,
+                                                  input_grad_data,
+                                                  pool_divmods_output);
+   }
+ };
 
 template class MaxPool3dWithIndexFunctor<phi::GPUContext, float, int>;
 template class MaxPool3dWithIndexGradFunctor<phi::GPUContext, float, int>;

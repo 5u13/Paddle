@@ -204,6 +204,7 @@ static inline int GetLastPow2(int n) {
   return std::max(1, n - (n >> 1));
 }
 
+// SUB:REF:DOING GetGpuLaunchConfig3D
 inline GpuLaunchConfig GetGpuLaunchConfig3D(const phi::GPUContext& context,
                                             int num_img,
                                             int height,
@@ -219,6 +220,7 @@ inline GpuLaunchConfig GetGpuLaunchConfig3D(const phi::GPUContext& context,
   std::array<int, 3> max_grid_dim = context.GetCUDAMaxGridDimSize();
   int grid_x = std::min(max_grid_dim[0], DivUp<int>(width, block_x));
   int grid_y = std::min(max_grid_dim[1], DivUp<int>(height, block_y));
+  // 这里为什么要*4，应该只是一种设置吧
   int grid_z = std::min(max_grid_dim[2], DivUp<int>(num_img, block_z * 4));
 
   const int capability = context.GetComputeCapability();
