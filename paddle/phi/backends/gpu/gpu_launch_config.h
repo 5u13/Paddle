@@ -204,7 +204,7 @@ static inline int GetLastPow2(int n) {
   return std::max(1, n - (n >> 1));
 }
 
-// SUB:REF:DOING GetGpuLaunchConfig3D
+// SUB:REF:DONE GetGpuLaunchConfig3D
 inline GpuLaunchConfig GetGpuLaunchConfig3D(const phi::GPUContext& context,
                                             int num_img,
                                             int height,

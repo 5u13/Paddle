@@ -102,7 +102,7 @@ __global__ void KeLinearInterpFw(const T* in,
   }
 }
 
-// SUB:REF:DOING KeNearestNeighborInterpNCHWFw
+// SUB:REF:DONE KeNearestNeighborInterpNCHWFw
 template <typename T>
 __global__ void KeNearestNeighborInterpNCHWFw(const T* in,
                                               const size_t in_img_h,
@@ -884,7 +884,7 @@ static void Interpolate2DCUDAFwd(
     if (data_layout == DataLayout::kNCHW) {
       // get launch 3D config
       int nc = n * c;
-      // SUB:REF:DOING 调用GetGpuLaunchConfig3D
+      // SUB:REF:DONE 调用GetGpuLaunchConfig3D
       backends::gpu::GpuLaunchConfig config_3d =
           backends::gpu::GetGpuLaunchConfig3D(dev_ctx, nc, out_h, out_w);
       KeNearestNeighborInterpNCHWFw<T><<<config_3d.block_per_grid,

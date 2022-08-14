@@ -719,7 +719,6 @@ class Pool2dGradFunctor<phi::GPUContext, PoolProcess, T> {
                                                           stride_width,
                                                           stride_height);
     
-    // SUB:REF:DOING 一维grid和block的起法，只在2d的特定2个kernel使用，可以考虑用到各个kernel
     auto config = phi::backends::gpu::GetGpuLaunchConfig1D(context, nthreads);
     KernelPool2DGrad<T, PoolProcess><<<config.block_per_grid,
                                        config.thread_per_block,
@@ -2229,7 +2228,7 @@ __global__ void KernelMaxPool3DWithIdx(const int nthreads,
 }
 */
 
-// SUB:DOING 三维线程配置版的maxpool3d前向kernel
+// SUB:DONE 三维线程配置版的maxpool3d前向kernel
 template <typename T1, typename T2>
 __global__ void KernelMaxPool3DWithIdx(const int ncd,
                                        const T1* input_data,
@@ -2646,7 +2645,7 @@ class MaxPool3dWithIndexFunctor<phi::GPUContext, T1, T2> {
  * Ksize, strides, paddings are three elements. These three elements represent
  * depth, height and width, respectively.
  */
- // SUB:DOING 三维线程配置版的maxpool3d起前向
+ // SUB:DONE 三维线程配置版的maxpool3d起前向
  template <typename T1, typename T2>
  class MaxPool3dWithIndexFunctor<phi::GPUContext, T1, T2> {
   public:
