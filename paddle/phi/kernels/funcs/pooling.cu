@@ -2144,7 +2144,8 @@ template class MaxPool2dWithIndexGradFunctor<phi::GPUContext, float, int>;
 template class MaxPool2dWithIndexFunctor<phi::GPUContext, double, int>;
 template class MaxPool2dWithIndexGradFunctor<phi::GPUContext, double, int>;
 
-// SUB:TODO maxpool3d前向kernel
+// SUB:DONE maxpool3d前向kernel
+/*
 template <typename T1, typename T2>
 __global__ void KernelMaxPool3DWithIdx(const int nthreads,
                                        const T1* input_data,
@@ -2170,7 +2171,6 @@ __global__ void KernelMaxPool3DWithIdx(const int nthreads,
                                        FastDivModForPooling3D divmods) {
   for (int index = blockIdx.x * blockDim.x + threadIdx.x; index < nthreads;
        index += blockDim.x * gridDim.x) {
-    // 优化索引计算中的除法和求模，通过fastdivmod计算（前面的函数参数和后面的变量名也需要修改）
     int dstart, dend, hstart, hend, wstart, wend;
     int w_offset, h_offset, d_offset, c_offset, input_offset;
     OffsetPreparationFor5Dimension<FastDivModForPooling3D>(index, 
@@ -2225,6 +2225,86 @@ __global__ void KernelMaxPool3DWithIdx(const int nthreads,
     }
     output_data[index] = ele;
     mask_data[index] = max_index;
+  }
+}
+*/
+
+// SUB:DOING 三维线程配置版的maxpool3d前向kernel
+template <typename T1, typename T2>
+__global__ void KernelMaxPool3DWithIdx(const int ncd,
+                                       const T1* input_data,
+                                       const int channels,
+                                       const int input_depth,
+                                       const int input_height,
+                                       const int input_width,
+                                       const int output_depth,
+                                       const int output_height,
+                                       const int output_width,
+                                       const int ksize_depth,
+                                       const int ksize_height,
+                                       const int ksize_width,
+                                       const int stride_depth,
+                                       const int stride_height,
+                                       const int stride_width,
+                                       const int padding_depth,
+                                       const int padding_height,
+                                       const int padding_width,
+                                       bool adaptive,
+                                       T1* output_data,
+                                       T2* mask_data,
+                                       FastDivModForPooling3D divmods_output) {
+  int w_offset, h_offset, d_offset, nc_offset;
+  int dstart, dend, hstart, hend, wstart, wend;
+  const T1* input_data_cur;
+
+  w_offset = blockIdx.x * blockDim.x + threadIdx.x;
+  h_offset = blockIdx.y * blockDim.y + threadIdx.y;
+
+  if (w_offset < output_width && h_offset < output_height) {
+    for (int index_z = blockIdx.z * blockDim.z + threadIdx.z; index_z < ncd; index_z += gridDim.z * blockDim.z) {
+      auto output_depth_divmod = divmods_output.depth.Divmod(index_z);
+      d_offset = output_depth_divmod.val[1];
+      nc_offset = output_depth_divmod.val[0];
+      int output_index = nc_offset * output_depth * output_height * output_width + d_offset * output_height * output_width + h_offset * output_width + w_offset;
+      int input_offset = nc_offset * input_depth * input_height * input_width;
+      input_data_cur = input_data + input_offset;
+
+      if (adaptive) {
+        dstart = AdaptStartIndex(d_offset, input_depth, output_depth);
+        dend = AdaptEndIndex(d_offset, input_depth, output_depth);
+  
+        hstart = AdaptStartIndex(h_offset, input_height, output_height);
+        hend = AdaptEndIndex(h_offset, input_height, output_height);
+  
+        wstart = AdaptStartIndex(w_offset, input_width, output_width);
+        wend = AdaptEndIndex(w_offset, input_width, output_width);
+      } else {
+        dstart = d_offset * stride_depth - padding_depth;
+        hstart = h_offset * stride_height - padding_height;
+        wstart = w_offset * stride_width - padding_width;
+        dend = min(dstart + ksize_depth, input_depth);
+        hend = min(hstart + ksize_height, input_height);
+        wend = min(wstart + ksize_width, input_width);
+        dstart = max(dstart, 0);
+        hstart = max(hstart, 0);
+        wstart = max(wstart, 0);
+      }
+
+      T1 ele = -FLT_MAX;
+      int max_index = -1;
+      for (int d = dstart; d < dend; ++d) {
+        for (int h = hstart; h < hend; ++h) {
+          for (int w = wstart; w < wend; ++w) {
+            if (ele < input_data_cur[(d * input_height + h) * input_width + w]) {
+              max_index = (d * input_height + h) * input_width + w;
+              ele = input_data_cur[max_index];
+            }
+          }
+        }
+      }
+      output_data[output_index] = ele;
+      mask_data[output_index] = max_index;
+    }
   }
 }
 
@@ -2464,14 +2544,14 @@ __global__ void KernelMaxPool3DWithIdxGrad(const int ncd,
   // 一直没有注意到这一点，这里要注意线程配置的时候会向2次幂取整，但实际index的时候不能越界
   if (w_offset < output_width && h_offset < output_height) {
     for (int index_z = blockIdx.z * blockDim.z + threadIdx.z; index_z < ncd; index_z += gridDim.z * blockDim.z) {
-        auto output_depth_divmod = divmods_output.depth.Divmod(index_z);
-        d_offset = output_depth_divmod.val[1];
-        nc_offset = output_depth_divmod.val[0];
-        int output_index = nc_offset * output_depth * output_height * output_width + d_offset * output_height * output_width + h_offset * output_width + w_offset;
-        int max_index = mask[output_index];
-        if (max_index != -1) {
-          paddle::platform::CudaAtomicAdd(&input_grad[nc_offset * input_depth * input_height * input_width + max_index], output_grad[output_index]);
-        }
+      auto output_depth_divmod = divmods_output.depth.Divmod(index_z);
+      d_offset = output_depth_divmod.val[1];
+      nc_offset = output_depth_divmod.val[0];
+      int output_index = nc_offset * output_depth * output_height * output_width + d_offset * output_height * output_width + h_offset * output_width + w_offset;
+      int max_index = mask[output_index];
+      if (max_index != -1) {
+        paddle::platform::CudaAtomicAdd(&input_grad[nc_offset * input_depth * input_height * input_width + max_index], output_grad[output_index]);
+      }
     }
   }
 }
@@ -2481,7 +2561,8 @@ __global__ void KernelMaxPool3DWithIdxGrad(const int ncd,
  * Ksize, strides, paddings are three elements. These three elements represent
  * depth, height and width, respectively.
  */
- // SUB:TODO maxpool3d起前向
+ // SUB:DONE maxpool3d起前向
+ /*
 template <typename T1, typename T2>
 class MaxPool3dWithIndexFunctor<phi::GPUContext, T1, T2> {
  public:
@@ -2558,6 +2639,91 @@ class MaxPool3dWithIndexFunctor<phi::GPUContext, T1, T2> {
                                                  pool_divmods);
   }
 };
+*/
+
+/*
+ * All tensors are in NCDHW format.
+ * Ksize, strides, paddings are three elements. These three elements represent
+ * depth, height and width, respectively.
+ */
+ // SUB:DOING 三维线程配置版的maxpool3d起前向
+ template <typename T1, typename T2>
+ class MaxPool3dWithIndexFunctor<phi::GPUContext, T1, T2> {
+  public:
+   void operator()(const phi::GPUContext& context,
+                   const DenseTensor& input,
+                   const std::vector<int>& ksize,
+                   const std::vector<int>& strides,
+                   const std::vector<int>& paddings,
+                   bool adaptive,
+                   DenseTensor* output,
+                   DenseTensor* mask) {
+     const int batch_size = input.dims()[0];
+     const int input_channels = input.dims()[1];
+     const int input_depth = input.dims()[2];
+     const int input_height = input.dims()[3];
+     const int input_width = input.dims()[4];
+     const int output_channels = output->dims()[1];
+     const int output_depth = output->dims()[2];
+     const int output_height = output->dims()[3];
+     const int output_width = output->dims()[4];
+     const int ksize_depth = ksize[0];
+     const int ksize_height = ksize[1];
+     const int ksize_width = ksize[2];
+     const int stride_depth = strides[0];
+     const int stride_height = strides[1];
+     const int stride_width = strides[2];
+     const int padding_depth = paddings[0];
+     const int padding_height = paddings[1];
+     const int padding_width = paddings[2];
+ 
+     const T1* input_data = input.data<T1>();
+     T1* output_data = context.template Alloc<T1>(output);
+     T2* mask_data = context.template Alloc<T2>(mask);
+ 
+     int ncd = batch_size * input_channels * output_depth;
+ 
+    //  backends::gpu::GpuLaunchConfig config = backends::gpu::GetGpuLaunchConfig3D(context, ncd, output_height, output_width);
+    //  dim3 threads = config.thread_per_block;
+    //  dim3 grid = config.block_per_grid;
+
+     int thread_x = 32;
+     int thread_y = 8;
+     int thread_z = 1;
+     dim3 threads(thread_x, thread_y, thread_z);
+     std::array<int, 3> max_grid_dim = context.GetCUDAMaxGridDimSize();
+     int block_x = (output_width + threads.x - 1) / threads.x;
+     int block_y = (output_height + threads.y - 1) / threads.y;
+     int block_z = (ncd > max_grid_dim[2] * threads.z) ? max_grid_dim[2] : (ncd + threads.z - 1) / threads.z;
+     dim3 grid(block_x, block_y, block_z);
+ 
+     auto pool_divmods_output = FastDivModForPooling3D(input_channels, output_width, output_height, output_depth);
+ 
+     KernelMaxPool3DWithIdx<T1, T2>
+         <<<grid, threads, 0, context.stream()>>>(ncd,
+                                                  input_data,
+                                                  input_channels,
+                                                  input_depth,
+                                                  input_height,
+                                                  input_width,
+                                                  output_depth,
+                                                  output_height,
+                                                  output_width,
+                                                  ksize_depth,
+                                                  ksize_height,
+                                                  ksize_width,
+                                                  stride_depth,
+                                                  stride_height,
+                                                  stride_width,
+                                                  padding_depth,
+                                                  padding_height,
+                                                  padding_width,
+                                                  adaptive,
+                                                  output_data,
+                                                  mask_data,
+                                                  pool_divmods_output);
+   }
+ };
 
 /*
  * All tensors are in NCDHW format.
