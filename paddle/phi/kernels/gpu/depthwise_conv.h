@@ -1007,7 +1007,7 @@ __device__ __inline__ void KernelDepthwiseConvFilterGradNCHW(
   if (threadIdx.y == 0 && threadIdx.x == 0) filter_grad_data[gbid] = val;
 }
 
-// SUB:TODO 第二层filter nhwc反向kernel，仅在case7调用
+// SUB:DOING 第二层filter nhwc反向kernel，仅在case7调用
 template <typename T, bool fuse_relu_before_conv>
 __device__ __inline__ void KernelDepthwiseConvFilterGradNHWC(
     const T* output_grad_data,
@@ -1029,20 +1029,25 @@ __device__ __inline__ void KernelDepthwiseConvFilterGradNHWC(
     const int dilate_height,
     const int dilate_width,
     T* filter_grad_data) {
-  int bid = blockIdx.z;
-  int image_h = blockIdx.y;
-  int kernel_iw = blockIdx.x % filter_width;
+  // 这个属实是没看懂，不想管。。
+
+  int bid = blockIdx.z;                       // batch_size
+  int image_h = blockIdx.y;                   // dilate_height
+  int kernel_iw = blockIdx.x % filter_width;  // output_height / dilate_height
   int kernel_ih = blockIdx.x / filter_width;
+  // c
   for (int kernel_id = threadIdx.x; kernel_id < output_channels;
        kernel_id += blockDim.x) {
     T s(0);
     int gbid =
         ((kernel_id * filter_height) + kernel_ih) * filter_width + kernel_iw;
+    // w
     for (int image_w = threadIdx.y; image_w < output_width;
          image_w += blockDim.y) {
       int kernel_h = kernel_ih * dilate_height - padding_height;
       int kernel_w = kernel_iw * dilate_width - padding_width;
 
+      // input coordinates calculation
       int image_hk = image_h * stride_height + kernel_h;
       int image_wk = image_w * stride_width + kernel_w;
       if (image_hk < 0 || image_hk >= input_height) continue;
@@ -1066,7 +1071,7 @@ __device__ __inline__ void KernelDepthwiseConvFilterGradNHWC(
   }
 }
 
-// SUB:TODO 第二层filter nhwc反向kernel，所有nhwc case均调用
+// SUB:DOING 第二层filter nhwc反向kernel，所有nhwc case均调用
 template <typename T, int c_filter, bool fuse_relu_before_conv>
 __device__ __inline__ void KernelDepthwiseConvFilterGradCFilterNHWC(
     const T* output_grad_data,
@@ -1088,8 +1093,12 @@ __device__ __inline__ void KernelDepthwiseConvFilterGradCFilterNHWC(
     const int dilate_height,
     const int dilate_width,
     T* filter_grad_data) {
-  const int bid = blockIdx.z;
-  int image_h = blockIdx.x * dilate_height + blockIdx.y;
+  // 这一整套带dilate的线程划分和索引计算，一直没看明白。。
+
+  const int bid = blockIdx.z;  // batch_size
+  int image_h = blockIdx.x * dilate_height +
+                blockIdx.y;  // (output_height/dilate_height)_offset *
+                             // dilate_height + dilate_height_offset
   if (image_h >= output_height) {
     return;
   }
@@ -1097,12 +1106,17 @@ __device__ __inline__ void KernelDepthwiseConvFilterGradCFilterNHWC(
   T r_weight[kWeightSize];
   const int wi_size = (output_width + dilate_width - 1) / dilate_width;
 
+  // 两层循环也没问题，就是对block切分维度的block-stride loop
+  // c
   for (int kernel_id = threadIdx.x; kernel_id < output_channels;
        kernel_id += blockDim.x) {
     for (int i = 0; i < c_filter * c_filter; ++i) {
       r_weight[i] = 0;
     }
+    // w
+    // blockDim.y不一定等于wi_size * dilate_width，所以kernel里需要重新算
     for (int i = threadIdx.y; i < wi_size * dilate_width; i += blockDim.y) {
+      // 就是做了一些整除校正，类似上面的image_h，为什么需要这么搞呢，具体不清楚。。
       int i_dw = i / wi_size;
       int i_wi = i - i_dw * wi_size;
       int image_w = i_wi * dilate_width + i_dw;
@@ -1111,8 +1125,10 @@ __device__ __inline__ void KernelDepthwiseConvFilterGradCFilterNHWC(
       }
       for (int kernel_ih = 0; kernel_ih < c_filter; ++kernel_ih) {
         for (int kernel_iw = 0; kernel_iw < c_filter; ++kernel_iw) {
+          // 这里的公式都是一样的
           int kernel_h = kernel_ih * dilate_height - padding_height;
           int kernel_w = kernel_iw * dilate_width - padding_width;
+          // input coordinates calculation
           int image_hk = image_h * stride_height + kernel_h;
           int image_wk = image_w * stride_width + kernel_w;
           if (image_hk < 0 || image_hk >= input_height) continue;
@@ -1136,6 +1152,8 @@ __device__ __inline__ void KernelDepthwiseConvFilterGradCFilterNHWC(
         }
       }
     }
+    // nhwc排布下，不再是每个block负责filter的1个数值，而是每个thread都要负责kernel的所有元素
+    // 由于c在最低维，导致没有办法让每个block单独负责filter的一个元素，需要原子操作；但如果强行这么做，不在block拆c，又会造成访存不连续
     for (int i = 0; i < c_filter * c_filter; ++i) {
       T* weight = filter_grad_data + i * output_channels + kernel_id;
       platform::CudaAtomicAdd(&weight[0], r_weight[i]);
@@ -1717,6 +1735,11 @@ class DepthwiseConvFilterGradFunctor<phi::GPUContext,
       grid = dim3(ksize_width, ksize_height, output_channels);
       threads = dim3(std::min(output_width, block_size), blocks, 1);
     } else {
+      // 这里dilate_width和dilate_height是干嘛的，没看懂；好像仅仅是为了某种整除和对齐，确保能拆成dilate块去运算，可能跟padding等有某种关系
+      // 这里切了bs，nchw没切，也就是说完全没切kernel，就是让每个thread负责到各个output元素，然后去推kernel所有元素的梯度
+      // c和w是每个thread要遍历，但n和h实际上被切到不同的block
+      // 不把c放到block内切会造成访存不连续，而把c放到block内切会导致多个block都要负责filter某个输出通道的所有元素，引入原子操作
+      // 总的来看也只能这么切。。
       blocks = std::min(
           std::max(block_size / output_channels, 1),
           ((output_width + dilate_width - 1) / dilate_width) * dilate_width);
